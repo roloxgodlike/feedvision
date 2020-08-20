@@ -10,6 +10,7 @@ import CommonUtils as cUtils
 import SerialUtils as sUtils
 import io
 import joblib
+import numpy as np
 warnings.filterwarnings("ignore")
 
 IMAGE_PATH_ROOT = sys.argv[1]
@@ -27,17 +28,17 @@ print('image_path: %s, device_key: %s, is_debug: %d' %(IMAGE_PATH_ROOT, DEVICE_K
 print('api:', API_URL)
 print('serial:', SERIAL_PORT, SERIAL_BAUD, SERIAL_TIMEOUT)
 
-# clf1 = joblib.load('feedvision/predict/lr.model')
-clf1 = joblib.load('lr.model')
+# clf0 = joblib.load('feedvision/predict/lr.model')
+clf0 = joblib.load('lr.model')
 filelist = []
 alarm = {
     'init': 1,
     'flag': 0,
     'count': 0,
-    'upload': 0,
+    'isAlarm': 0,
+    'isDisalarm': 0,
     'batchid': '',
     'image_path': '' ,
-    'is_changed': 0
 }
 
 port_len = sUtils.show_list()
@@ -50,22 +51,17 @@ if not SERIAL_PORT:
 def reset_alarm_status():
     alarm['flag'] = 1 - alarm['flag']
     alarm['count'] = 0
-    # alarm['upload'] = 0
     alarm['init'] = 0
-    alarm['is_changed'] = 1
 
 def process_alarm():
     if not alarm['flag']:
-        # print('>>> alarm')
+        print('>>> alarm')
         reset_alarm_status()
     alarm['count'] += 1
-    if alarm['is_changed'] and alarm['count'] == 5: #模型不准时的意外数据防抖
-        alarm['upload'] = 0
-        alarm['is_changed'] = 0
     if alarm['count'] < 6:
         return
     else:
-        if not alarm['upload']:
+        if not alarm['isAlarm']:
             print('trigger alarm')
             handle_alarm()
         else:
@@ -73,18 +69,15 @@ def process_alarm():
 
 def process_disalarm():
     if alarm['flag']:
-        # print('>>> dis-alarm')
+        print('>>> dis-alarm')
         reset_alarm_status()
     if alarm['init']: #首次如果正常状态不得累计
         return
     alarm['count'] += 1
-    if alarm['is_changed'] and alarm['count'] == 5:
-        alarm['upload'] = 0
-        alarm['is_changed'] = 0
     if alarm['count'] < 6:
         return
     else:
-        if not alarm['upload']:
+        if not alarm['isDisalarm']:
             print('trigger dis-alarm')
             handle_disalarm()
         else:
@@ -112,19 +105,24 @@ def alarm_upload(is_alarm):
         alarm['batchid'] = batchid
     else:
         batchid = alarm['batchid']
+        if not batchid:
+            alarm['isAlarm'] = 0
+            alarm['isDislarm'] = 1
+            return
 
     data = {
         'alarmBatchId': batchid,
         'alarmTime': tt,
         'alarmType': '1',
         'deviceKey': DEVICE_KEY,
-        'imgData': cUtils.img_to_base64(process_img_path)
+        'imgData': cUtils.img_to_base64(alarm['image_path'])
     }
 
+    is_success = 1
     if IS_DEBUG:
         del data['imgData']
         print('http-tx:', data)
-        alarm['upload'] = 1
+        is_success = 1
     else:
         respJson = cUtils.http_post_json(API_URL, data)
         del data['imgData']
@@ -132,8 +130,17 @@ def alarm_upload(is_alarm):
         print('http-rx:', respJson)
         if respJson is None or respJson['success'] == False:
             print('upload failed')
+            is_success = 0
         else:
-            alarm['upload'] = 1
+            is_success = 1
+
+    if is_success and is_alarm:
+        alarm['isAlarm'] = 1
+        alarm['isDisalarm'] = 0
+    if is_success and not is_alarm:
+        alarm['isAlarm'] = 0
+        alarm['isDisalarm'] = 1
+        alarm['batchid'] = ''
 
 while 1:
 
@@ -149,13 +156,15 @@ while 1:
         # read and analyse image
         for img in filelist:
             image_path = os.path.join(IMAGE_PATH_ROOT, img)
-            process_img_path = image_path
+            alarm['image_path'] = image_path
             image = cv2.imread(image_path)
-            # image = image[370:480,720:1030,]
-            image = image[620:675,840:1065,]
-            image = cv2.resize(image, (256,256), interpolation=cv2.INTER_CUBIC)
-            hist = cv2.calcHist([image], [0,1], None, [256,256], [0.0,255.0,0.0,255.0])
-            result = clf1.predict([(hist/255).flatten()])
+            image = image[610:680,835:1130,]
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            num_pixels = image.shape[0] * image.shape[1]
+            image_data = image.reshape((1, num_pixels))
+
+            # print(img, clf0.predict(image_data)[0])
+            result = clf0.predict(image_data)[0]
             if result == 1:
                 print('1-exist')
                 process_disalarm()
