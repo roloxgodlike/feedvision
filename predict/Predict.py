@@ -14,23 +14,27 @@ import numpy as np
 warnings.filterwarnings("ignore")
 
 IMAGE_PATH_ROOT = sys.argv[1]
-# IMAGE_PATH_ROOT = 'feedvision/image/demo'
+# IMAGE_PATH_ROOT = 'image/test'
 IS_DEBUG = int(sys.argv[2])
 # IS_DEBUG = 1
-DEVICE_KEY = cUtils.get_mac_addr()
-API_URL = 'https://mes.poseidong.com/smart/device/access/alarm/data/push'
+DEVICE_KEY = cUtils.get_mac_addr() #设备号, 默认取当前终端MAC地址
+API_URL = 'http://quanling.inlinke.com/smart/device/access/alarm/data/push'
 SERIAL_PORT = '/dev/ttyS0'
-# SERIAL_PORT = 'COM4'
+# SERIAL_PORT = 'COM54'
 SERIAL_BAUD = 9600
 SERIAL_TIMEOUT = 3
+ALARM_COUNT = 30 #连续报警触发次数, 每次间隔10s
+DISALARM_COUNT = 10 #连续解除报警触发次数, 每次间隔10s
+UPLOAD_COUNT = 60 #到达采样上报次数, 每次间隔10s
 
 print('image_path: %s, device_key: %s, is_debug: %d' %(IMAGE_PATH_ROOT, DEVICE_KEY, IS_DEBUG))
 print('api:', API_URL)
 print('serial:', SERIAL_PORT, SERIAL_BAUD, SERIAL_TIMEOUT)
 
-# clf0 = joblib.load('feedvision/predict/lr.model')
+# clf0 = joblib.load('predict/lr.model')
 clf0 = joblib.load('lr.model')
 filelist = []
+uploadTimer = 0 #计时累计
 alarm = {
     'init': 1,
     'flag': 0,
@@ -58,7 +62,7 @@ def process_alarm():
         print('>>> alarm')
         reset_alarm_status()
     alarm['count'] += 1
-    if alarm['count'] < 6:
+    if alarm['count'] < ALARM_COUNT:
         return
     else:
         if not alarm['isAlarm']:
@@ -74,7 +78,7 @@ def process_disalarm():
     if alarm['init']: #首次如果正常状态不得累计
         return
     alarm['count'] += 1
-    if alarm['count'] < 6:
+    if alarm['count'] < DISALARM_COUNT:
         return
     else:
         if not alarm['isDisalarm']:
@@ -142,6 +146,24 @@ def alarm_upload(is_alarm):
         alarm['isDisalarm'] = 1
         alarm['batchid'] = ''
 
+def image_upload():
+    tt = cUtils.get_timestamp_mills()
+    batchid = get_alarm_batchid(tt)
+
+    data = {
+        'alarmBatchId': batchid,
+        'alarmTime': tt,
+        'alarmType': '2',
+        'deviceKey': DEVICE_KEY,
+        'imgData': cUtils.img_to_base64(alarm['image_path'])
+    }
+
+    respJson = cUtils.http_post_json(API_URL, data)
+    print('http-tx:', data)
+    print('http-rx:', respJson)
+    if respJson is None or respJson['success'] == False:
+        print('upload failed')
+
 while 1:
 
     filelist.clear()
@@ -166,16 +188,20 @@ while 1:
             # print(img, clf0.predict(image_data)[0])
             result = clf0.predict(image_data)[0]
             if result == 1:
-                print('1-exist')
+                print('1-exist', image_path)
                 process_disalarm()
             else:
-                print('0-none')
+                print('0-none', image_path)
                 process_alarm()
+
+            if uploadTimer >= UPLOAD_COUNT: #定时上传采样图片
+                image_upload()
+                uploadTimer = 0
+
             if IS_DEBUG:
                 time.sleep(1)
             else:
                 os.remove(image_path)
-
 
     except Exception as e:
         print('ex:', e)
@@ -189,4 +215,5 @@ while 1:
             for img in filelist:
                 os.remove(os.path.join(IMAGE_PATH_ROOT,img))
             time.sleep(10)
+        uploadTimer = uploadTimer + 1
         print('---------------------------------------------')
